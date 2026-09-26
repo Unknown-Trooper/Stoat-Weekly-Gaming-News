@@ -138,13 +138,13 @@ jobs:
               "**Hot right now**",
               bullets(
                   hot[:8],
-                  lambda appid: f"• https://store.steampowered.com/app/{appid}"
+                  lambda appid: f"• <https://store.steampowered.com/app/{appid}>"
               ),
               "",
               "**Updates that shipped**",
               bullets(
                   updates[:8],
-                  lambda t: f"• {t[0]}\nhttps://store.steampowered.com/news/app/{t[1]}"
+                  lambda t: f"• {t[0]}\n<https://store.steampowered.com/news/app/{t[1]}>"
               ),
               "",
               "**Dropping this week**",
@@ -155,7 +155,7 @@ jobs:
               "",
               "**What people are arguing about**",
               "_From r/Games. Not verified reporting._",
-              bullets(chatter[:5], lambda t: f"• {t[0]}\n{t[1]}"),
+              bullets(chatter[:5], lambda t: f"• {t[0]}\n<{t[1]}>"),
               "",
               "_Release dates via RAWG._",
           ]
@@ -168,7 +168,10 @@ jobs:
           for chunk in chunks:
               body = json.dumps({
                   "content": chunk,
-                  "masquerade": {"name": "Weekly Gaming Report"}
+                  "masquerade": {
+                      "name": "Weekly Gaming Report",
+                      "avatar": "https://pbs.twimg.com/profile_images/1702008325112741888/G6YzrWya.jpg"
+                  }
               }).encode()
               req = urllib.request.Request(
                   hook, data=body,
