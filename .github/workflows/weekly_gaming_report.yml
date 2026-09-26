@@ -22,7 +22,22 @@ jobs:
           if not hook.startswith("http"):
               print("missing STOAT_WEBHOOK_WEEKLY")
               sys.exit(1)
-          UA = {"User-Agent": "StoatWeeklyReport/1.4"}
+
+          # --- edit these ---
+          WATCHLIST = [
+              3932890,  # Escape from Tarkov
+              1808500,  # ARC Raiders
+              1867240,  # WARDOGS
+              2168680,  # Nuclear Option
+              553850,   # Helldivers 2
+              108600,   # Project Zomboid
+          ]
+          BLACKLIST = {
+              431960,   # Wallpaper Engine
+          }
+          # --- stop editing ---
+
+          UA = {"User-Agent": "StoatWeeklyReport/1.5"}
           now = datetime.now(timezone.utc)
           week = now.strftime("%b %d, %Y")
           start = now.date()
@@ -56,7 +71,7 @@ jobs:
           hot_ids = []
           try:
               charts = get_json("https://api.steampowered.com/ISteamChartsService/GetMostPlayedGames/v1/")
-              for row in charts.get("response", {}).get("ranks", [])[:10]:
+              for row in charts.get("response", {}).get("ranks", [])[:12]:
                   appid = row.get("appid")
                   if appid:
                       hot_ids.append(int(appid))
@@ -64,8 +79,15 @@ jobs:
           except Exception as err:
               print("charts failed", err)
               hot_ids = [730, 570, 553850, 892970]
+          ordered = []
+          for appid in list(WATCHLIST) + hot_ids:
+              if appid in BLACKLIST or appid in ordered:
+                  continue
+              ordered.append(appid)
+          ordered = ordered[:10]
+          print("final ids", ordered)
           hot = []
-          for appid in hot_ids[:8]:
+          for appid in ordered:
               name = app_name(appid)
               hot.append((appid, name))
               print("named", appid, name)
@@ -131,7 +153,7 @@ jobs:
               try:
                   data = get_json(url)
                   rows = data.get("data") if isinstance(data, dict) else data
-                  print("pullpush", sub, type(rows), len(rows) if rows else 0)
+                  print("pullpush", sub, len(rows) if rows else 0)
                   for post in rows or []:
                       link = post.get("permalink") or post.get("url") or ""
                       if link and link.startswith("/"):
@@ -162,7 +184,7 @@ jobs:
           def bullets(rows):
               return "\n".join(rows) if rows else "_Nothing this week._"
           hot_lines = ["**" + name + "** — <https://store.steampowered.com/app/" + str(appid) + ">" for appid, name in hot]
-          update_lines = ["**" + name + "** — " + title + "\n<https://store.steampowered.com/news/app/" + str(appid) + ">" for name, title, appid in updates[:7]]
+          update_lines = ["**" + name + "** — " + title + "\n<https://store.steampowered.com/news/app/" + str(appid) + ">" for name, title, appid in updates[:8]]
           drop_lines = ["**" + name + "** — " + day for name, day in dropping[:6]]
           next_lines = ["**" + name + "** — " + day for name, day in upcoming[:6]]
           chat_lines = []
@@ -175,7 +197,7 @@ jobs:
               "# Weekly gaming report",
               "_" + week + "_",
               "",
-              "## Hot on Steam",
+              "## Watchlist + hot on Steam",
               bullets(hot_lines),
               "",
               "## Official updates",
