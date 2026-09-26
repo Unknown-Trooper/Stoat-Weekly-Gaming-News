@@ -24,7 +24,7 @@ jobs:
               print("missing STOAT_WEBHOOK_WEEKLY")
               sys.exit(1)
 
-          UA = {"User-Agent": "StoatWeeklyReport/1.0 (github actions)"}
+          UA = {"User-Agent": "Mozilla/5.0 StoatWeeklyReport/1.1"}
           now = datetime.now(timezone.utc)
           week = now.strftime("%b %d, %Y")
           start = now.date()
@@ -43,43 +43,53 @@ jobs:
               cyr = sum(1 for ch in letters if "А" <= ch <= "я" or ch in "Ёё")
               return cyr / len(letters) < 0.3
 
-          hot = []
+          def app_name(appid):
+              try:
+                  data = get_json(f"https://store.steampowered.com/api/appdetails?appids={appid}&l=english")
+                  info = data.get(str(appid), {})
+                  if info.get("success"):
+                      return info["data"].get("name") or str(appid)
+              except Exception as err:
+                  print("name fail", appid, err)
+              return str(appid)
+
+          hot_ids = []
           try:
               charts = get_json("https://api.steampowered.com/ISteamChartsService/GetMostPlayedGames/v1/")
-              ranks = charts.get("response", {}).get("ranks", [])[:12]
-              for row in ranks:
+              for row in charts.get("response", {}).get("ranks", [])[:10]:
                   appid = row.get("appid")
                   if appid:
-                      hot.append(int(appid))
-              print("charts", len(hot))
+                      hot_ids.append(int(appid))
+              print("charts", len(hot_ids))
           except Exception as err:
               print("charts failed", err)
-              hot = [553850, 3932890, 892970, 221100, 1808500, 108600, 1867240, 2168680]
+              hot_ids = [730, 553850, 3932890, 892970, 221100, 1808500, 1867240]
+
+          hot = [(appid, app_name(appid)) for appid in hot_ids[:8]]
+          print("named", [n for _, n in hot])
 
           updates = []
           cutoff = now - timedelta(days=7)
-          for appid in hot[:10]:
+          skip_labels = {"steam community", "workshop"}
+          for appid, name in hot:
               try:
                   data = get_json(
                       "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/"
-                      f"?appid={appid}&count=6&maxlength=140&format=json&l=english"
+                      f"?appid={appid}&count=8&maxlength=140&format=json&l=english"
                   )
               except Exception as err:
                   print("news fail", appid, err)
                   continue
-              items = data.get("appnews", {}).get("newsitems", [])
-              kept = 0
-              for item in items:
+              for item in data.get("appnews", {}).get("newsitems", []):
                   title = html.unescape(item.get("title") or "")
-                  if not title or not is_english(title):
+                  label = (item.get("feedlabel") or "").lower()
+                  if not title or not is_english(title) or label in skip_labels:
                       continue
                   date = datetime.fromtimestamp(int(item.get("date") or 0), tz=timezone.utc)
                   if date < cutoff:
                       continue
-                  updates.append((title, int(appid)))
-                  kept += 1
-                  if kept >= 1:
-                      break
+                  updates.append((name, title, appid))
+                  break
           print("updates", len(updates))
 
           def rawg_games(start_d, end_d):
@@ -89,19 +99,16 @@ jobs:
                   "key": rawg_key,
                   "dates": f"{start_d},{end_d}",
                   "ordering": "-added",
-                  "page_size": 8,
+                  "page_size": 6,
               })
               data = get_json("https://api.rawg.io/api/games?" + q)
-              out = []
-              for g in data.get("results", []):
-                  name = g.get("name") or ""
-                  released = g.get("released") or ""
-                  if name:
-                      out.append((name, released))
-              return out
+              return [
+                  (g.get("name"), g.get("released") or "")
+                  for g in data.get("results", [])
+                  if g.get("name")
+              ]
 
-          dropping = []
-          upcoming = []
+          dropping, upcoming = [], []
           try:
               dropping = rawg_games(start, end_this)
               upcoming = rawg_games(end_this, end_next)
@@ -110,54 +117,58 @@ jobs:
               print("rawg failed", err)
 
           chatter = []
-          try:
-              reddit = get_json("https://www.reddit.com/r/Games/hot.json?limit=20")
-              for child in reddit.get("data", {}).get("children", []):
-                  post = child.get("data") or {}
-                  if post.get("stickied") or post.get("over_18"):
-                      continue
-                  title = html.unescape(post.get("title") or "")
-                  if not title or not is_english(title):
-                      continue
-                  permalink = "https://www.reddit.com" + (post.get("permalink") or "")
-                  chatter.append((title, permalink))
-                  if len(chatter) >= 5:
+          reddit_urls = [
+              "https://old.reddit.com/r/Games/hot.json?limit=25",
+              "https://www.reddit.com/r/Games/hot.json?limit=25",
+              "https://old.reddit.com/r/pcgaming/hot.json?limit=25",
+          ]
+          for url in reddit_urls:
+              try:
+                  reddit = get_json(url)
+                  for child in reddit.get("data", {}).get("children", []):
+                      post = child.get("data") or {}
+                      if post.get("stickied") or post.get("over_18"):
+                          continue
+                      title = html.unescape(post.get("title") or "")
+                      if not title or not is_english(title):
+                          continue
+                      link = "https://www.reddit.com" + (post.get("permalink") or "")
+                      chatter.append((title, link))
+                      if len(chatter) >= 5:
+                          break
+                  print("chatter", url, len(chatter))
+                  if chatter:
                       break
-              print("chatter", len(chatter))
-          except Exception as err:
-              print("reddit failed", err)
+              except Exception as err:
+                  print("reddit fail", url, err)
 
-          def bullets(rows, fmt):
-              if not rows:
-                  return "_Nothing pulled this week._"
-              return "\n".join(fmt(row) for row in rows)
+          def bullets(rows):
+              return "\n".join(rows) if rows else "_Nothing this week._"
 
           parts = [
-              f"**Weekly gaming report — {week}**",
-              "_Steam charts + official patches + release calendar + community chatter._\n",
-              "**Hot right now**",
-              bullets(
-                  hot[:8],
-                  lambda appid: f"• <https://store.steampowered.com/app/{appid}>"
-              ),
+              f"# Weekly gaming report",
+              f"_{week}_",
               "",
-              "**Updates that shipped**",
-              bullets(
-                  updates[:8],
-                  lambda t: f"• {t[0]}\n<https://store.steampowered.com/news/app/{t[1]}>"
-              ),
+              "## Hot on Steam",
+              bullets([f"**{name}** — <https://store.steampowered.com/app/{appid}>" for appid, name in hot]),
               "",
-              "**Dropping this week**",
-              bullets(dropping[:6], lambda t: f"• **{t[0]}** ({t[1]})") if dropping else "_Add a RAWG_KEY secret to fill this._",
+              "## Official updates",
+              bullets([
+                  f"**{name}** — {title}\n<https://store.steampowered.com/news/app/{appid}>"
+                  for name, title, appid in updates[:7]
+              ]),
               "",
-              "**Next week**",
-              bullets(upcoming[:6], lambda t: f"• **{t[0]}** ({t[1]})") if upcoming else "_Add a RAWG_KEY secret to fill this._",
+              "## Dropping this week",
+              bullets([f"**{name}** — {day}" for name, day in dropping[:6]]) if dropping else "_RAWG missed this week._",
               "",
-              "**What people are arguing about**",
-              "_From r/Games. Not verified reporting._",
-              bullets(chatter[:5], lambda t: f"• {t[0]}\n<{t[1]}>"),
+              "## Next week",
+              bullets([f"**{name}** — {day}" for name, day in upcoming[:6]]) if upcoming else "_RAWG missed this week._",
               "",
-              "_Release dates via RAWG._",
+              "## Community chatter",
+              "_r/Games. Not verified reporting._",
+              bullets([f"{title}\n<{link}>" for title, link in chatter[:5]]),
+              "",
+              "_Sources: Steam charts, Steam news, RAWG._",
           ]
           text = "\n".join(parts).strip()
           chunks = []
