@@ -1,0 +1,181 @@
+name: Weekly gaming report to Stoat
+
+on:
+  schedule:
+    - cron: "0 15 * * 1"
+  workflow_dispatch:
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build weekly report
+        env:
+          STOAT_WEBHOOK: ${{ secrets.STOAT_WEBHOOK_WEEKLY }}
+          RAWG_KEY: ${{ secrets.RAWG_KEY }}
+        run: |
+          python3 - <<'PY'
+          import html, json, os, re, sys, urllib.parse, urllib.request
+          from datetime import datetime, timezone, timedelta
+
+          hook = os.environ.get("STOAT_WEBHOOK", "").strip()
+          rawg_key = os.environ.get("RAWG_KEY", "").strip()
+          if not hook.startswith("http"):
+              print("missing STOAT_WEBHOOK_WEEKLY")
+              sys.exit(1)
+
+          UA = {"User-Agent": "StoatWeeklyReport/1.0 (github actions)"}
+          now = datetime.now(timezone.utc)
+          week = now.strftime("%b %d, %Y")
+          start = now.date()
+          end_this = (now + timedelta(days=7)).date()
+          end_next = (now + timedelta(days=14)).date()
+
+          def get_json(url):
+              req = urllib.request.Request(url, headers=UA)
+              with urllib.request.urlopen(req, timeout=25) as resp:
+                  return json.load(resp)
+
+          def is_english(title):
+              letters = re.findall(r"[A-Za-zА-Яа-яЁё]", title)
+              if not letters:
+                  return True
+              cyr = sum(1 for ch in letters if "А" <= ch <= "я" or ch in "Ёё")
+              return cyr / len(letters) < 0.3
+
+          hot = []
+          try:
+              charts = get_json("https://api.steampowered.com/ISteamChartsService/GetMostPlayedGames/v1/")
+              ranks = charts.get("response", {}).get("ranks", [])[:12]
+              for row in ranks:
+                  appid = row.get("appid")
+                  if appid:
+                      hot.append(int(appid))
+              print("charts", len(hot))
+          except Exception as err:
+              print("charts failed", err)
+              hot = [553850, 3932890, 892970, 221100, 1808500, 108600, 1867240, 2168680]
+
+          updates = []
+          cutoff = now - timedelta(days=7)
+          for appid in hot[:10]:
+              try:
+                  data = get_json(
+                      "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/"
+                      f"?appid={appid}&count=6&maxlength=140&format=json&l=english"
+                  )
+              except Exception as err:
+                  print("news fail", appid, err)
+                  continue
+              items = data.get("appnews", {}).get("newsitems", [])
+              kept = 0
+              for item in items:
+                  title = html.unescape(item.get("title") or "")
+                  if not title or not is_english(title):
+                      continue
+                  date = datetime.fromtimestamp(int(item.get("date") or 0), tz=timezone.utc)
+                  if date < cutoff:
+                      continue
+                  updates.append((title, int(appid)))
+                  kept += 1
+                  if kept >= 1:
+                      break
+          print("updates", len(updates))
+
+          def rawg_games(start_d, end_d):
+              if not rawg_key:
+                  return []
+              q = urllib.parse.urlencode({
+                  "key": rawg_key,
+                  "dates": f"{start_d},{end_d}",
+                  "ordering": "-added",
+                  "page_size": 8,
+              })
+              data = get_json("https://api.rawg.io/api/games?" + q)
+              out = []
+              for g in data.get("results", []):
+                  name = g.get("name") or ""
+                  released = g.get("released") or ""
+                  if name:
+                      out.append((name, released))
+              return out
+
+          dropping = []
+          upcoming = []
+          try:
+              dropping = rawg_games(start, end_this)
+              upcoming = rawg_games(end_this, end_next)
+              print("rawg", len(dropping), len(upcoming))
+          except Exception as err:
+              print("rawg failed", err)
+
+          chatter = []
+          try:
+              reddit = get_json("https://www.reddit.com/r/Games/hot.json?limit=20")
+              for child in reddit.get("data", {}).get("children", []):
+                  post = child.get("data") or {}
+                  if post.get("stickied") or post.get("over_18"):
+                      continue
+                  title = html.unescape(post.get("title") or "")
+                  if not title or not is_english(title):
+                      continue
+                  permalink = "https://www.reddit.com" + (post.get("permalink") or "")
+                  chatter.append((title, permalink))
+                  if len(chatter) >= 5:
+                      break
+              print("chatter", len(chatter))
+          except Exception as err:
+              print("reddit failed", err)
+
+          def bullets(rows, fmt):
+              if not rows:
+                  return "_Nothing pulled this week._"
+              return "\n".join(fmt(row) for row in rows)
+
+          parts = [
+              f"**Weekly gaming report — {week}**",
+              "_Steam charts + official patches + release calendar + community chatter._\n",
+              "**Hot right now**",
+              bullets(
+                  hot[:8],
+                  lambda appid: f"• https://store.steampowered.com/app/{appid}"
+              ),
+              "",
+              "**Updates that shipped**",
+              bullets(
+                  updates[:8],
+                  lambda t: f"• {t[0]}\nhttps://store.steampowered.com/news/app/{t[1]}"
+              ),
+              "",
+              "**Dropping this week**",
+              bullets(dropping[:6], lambda t: f"• **{t[0]}** ({t[1]})") if dropping else "_Add a RAWG_KEY secret to fill this._",
+              "",
+              "**Next week**",
+              bullets(upcoming[:6], lambda t: f"• **{t[0]}** ({t[1]})") if upcoming else "_Add a RAWG_KEY secret to fill this._",
+              "",
+              "**What people are arguing about**",
+              "_From r/Games. Not verified reporting._",
+              bullets(chatter[:5], lambda t: f"• {t[0]}\n{t[1]}"),
+              "",
+              "_Release dates via RAWG._",
+          ]
+          text = "\n".join(parts).strip()
+          chunks = []
+          while text:
+              chunks.append(text[:1900])
+              text = text[1900:]
+
+          for chunk in chunks:
+              body = json.dumps({
+                  "content": chunk,
+                  "masquerade": {"name": "Weekly Gaming Report"}
+              }).encode()
+              req = urllib.request.Request(
+                  hook, data=body,
+                  headers={"Content-Type": "application/json"},
+                  method="POST",
+              )
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  print("stoat", resp.status)
+          print("done")
+          PY
