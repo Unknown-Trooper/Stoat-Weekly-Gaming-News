@@ -43,3 +43,8 @@ WATCHLIST = [
 BLACKLIST = {
     431960,   # Wallpaper Engine
 }
+```
+
+## Also see
+Want a live feed for a single game?  
+[Stoat Game News AutoFeed](https://github.com/Unknown-Trooper/Stoat-Game-News-AutoFeed) — official Steam news posted to Stoat as it drops.
